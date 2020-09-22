@@ -1,0 +1,7 @@
+{
+  "app_name": "preferences",
+  "server_port": 9092,
+  "log4js": {
+    "pm2": true
+  }
+}
