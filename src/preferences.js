@@ -280,7 +280,7 @@ app.put(prefix + 'users/:user_id/contacts', async function (req, res, next) {
         user.user_id = req.params.user_id;
         return next({type: "ok", status: 200, message: user})
     } catch (err) {
-        logger.error(err);
+        logger.error(JSON.stringify(err));
         return next({type: "db_error", status: 500, message: err})
     }
 });
