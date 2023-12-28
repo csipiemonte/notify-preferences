@@ -25,41 +25,6 @@ app.use(function(req,res,next){
 
 var fs = require("fs");
 
-var hostname = require('os').hostname();
-console.log("instrumentazione per appdynamics: ", process.env.APPDYNAMICS_HOSTS, hostname)
-logger.info("instrumentazione per appdynamics: ", process.env.APPDYNAMICS_HOSTS, hostname)
-
-var env_dynamics = {
-    "dev" : "DEV",
-    "tst" : "TEST",
-    "prod": "PROD"
-}
-
-if(process.env.APPDYNAMICS_HOSTS && process.env.APPDYNAMICS_HOSTS.indexOf(hostname) !== -1){
-    require("appdynamics").profile({
-        controllerHostName: 'csi-net.saas.appdynamics.com',
-        controllerPort: 443,
-        controllerSslEnabled: true,
-        accountName: 'csi-net',
-        accountAccessKey: 'accountAccessKey',
-        applicationName: 'NOTIFY_' + env_dynamics[process.env.ENVIRONMENT] + '_CSI-01',
-        tierName: 'notify-' + conf.app_name,
-        nodeName: 'notify-'+ conf.app_name + '-' + hostname,
-        proxyHost: conf.appdynamics.proxyHost,
-        proxyPort: conf.appdynamics.proxyPort
-    })
-
-
-}
-
-// trace request as event
-/*const eh = obj.event_handler();
-if (eh) app.use((req, res, next) => {
-    eh.client_request(req);
-    next();
-});*/
-
-
 if (conf.security) {
     if(conf.security.blacklist) obj.blacklist(app);
 
