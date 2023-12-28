@@ -21,8 +21,7 @@ Per rendere operativo il sistema occorre:
 1. creazione dello schema sul database con lo script `dbscript/unppreferences.sql`.
 1. impostare gli opportuni valori delle variabili d'ambiente
 1. editare il file di configurazione
-1. avviare l'applicazione.
-1. Usare i servizi (vedi `docs/preferences.yaml`)
+1. avviare l'applicazione
 
 ## Prerequisites
 
@@ -87,10 +86,10 @@ npm start
 ```
 
 # Eventi
-Il sistema registra su un message broker basato su api rest gli eventi relativi all'esecuzione. Vedi il progetto "eventconsumer" per i dettagli sul formato degli eventi.
+Il sistema registra su un message broker basato su api rest gli eventi relativi all'esecuzione. Vedi la componente [notify-events](https://github.com/csipiemonte/notify-events) per i dettagli sul formato degli eventi.
 
 # Audit
-Il sistema registra su un message broker basato su api rest i messaggi di audit. Tali messaggi sono riferiti alle http request che sono sottoposte al sistema. Le richieste sono correlate grazie all'header `X-Request-ID`. Se tale header non è popolato allora il sistema ne genera uno automaticamente. Vedi il progetto "auditconsumer" per i dettagli del formato.
+Il sistema registra su un message broker basato su api rest i messaggi di audit. Tali messaggi sono riferiti alle http request che sono sottoposte al sistema. Le richieste sono correlate grazie all'header `X-Request-ID`. Se tale header non è popolato allora il sistema ne genera uno automaticamente. Vedi la componente [notify-audit](https://github.com/csipiemonte/notify-audit) per i dettagli del formato.
 
 
 ## Use case
