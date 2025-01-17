@@ -1,584 +1,69 @@
 var commons = require("../../commons/src/commons");
-console.log(JSON.stringify(process.env, null, 4));
 const conf = commons.merge(require('./conf/preferences'), require('./conf/preferences-' + (process.env.ENVIRONMENT || 'localhost')));
-console.log(JSON.stringify(conf, null, 4));
 const obj = commons.obj(conf);
-
 const logger = obj.logger();
-const db = obj.db();
-const Utility = obj.utility();
-const security_checks = obj.security_checks();
-const buildQuery = obj.query_builder();
+const locales = commons.locales;
 
-var prefix = "/api/v1/";
+var prefix = "/api";
 
 var express = require('express');
 var bodyParser = require('body-parser');
 
 var app = express();
-
+app.disable('x-powered-by');
+// configure body parser
 app.use(bodyParser.json());
-app.use(function(req,res,next){
+
+app.use((req, res, next) => {
+    // Set the timeout for all HTTP requests
+    req.setTimeout(30000, () => {
+        logger.error('Request has timed out.');
+        res.send(408);
+    });
+    // Set the server response timeout for all HTTP requests
+    res.setTimeout(30000, () => {
+        logger.error('Response has timed out.');
+        res.send(503);
+    });
+
+    res.set("Content-Security-Policy", "default-src 'none'");
+
+    next();
+});
+
+// initialize response time header
+app.use(function (req, res, next) {
     res.set("X-Response-Time", new Date().getTime());
     next();
 });
 
-var fs = require("fs");
+// check basic authorization
+const security_checks = obj.security_checks();
+app.use(prefix + '/v2', security_checks.checkBasicAuth);
 
 if (conf.security) {
-    if(conf.security.blacklist) obj.blacklist(app);
+    if (conf.security.blacklist) obj.blacklist(app);
 
     var permissionMap = [];
-
-    const USER_PREFIX = "users/:user_id/";
-
-    permissionMap.push({
-        url: prefix + "services",
-        method: "get",
-        permissions: ["read"]
-    });
-    permissionMap.push({
-        url: prefix + USER_PREFIX + "contacts",
-        method: "get",
-        permissions: ["read"]
-    });
-    permissionMap.push({
-        url: prefix + USER_PREFIX + "preferences/:service_name",
-        method: "get",
-        permissions: ["read"]
-    });
-    permissionMap.push({
-        url: prefix + USER_PREFIX + "contacts/:service_name",
-        method: "get",
-        permissions: ["read"]
-    });
-    permissionMap.push({
-        url: [prefix + "terms"],
-        method: "get",
-        permissions: ["read"]
-    });
-    permissionMap.push({
-        url: prefix + USER_PREFIX + "terms",
-        method: "put",
-        permissions: ["write"]
-    });
-    permissionMap.push({
-        url: prefix + USER_PREFIX + "terms",
-        method: "get",
-        permissions: ["read"]
-    });
-    permissionMap.push({
-        url: prefix + USER_PREFIX + "contacts",
-        method: "put",
-        permissions: ["write"]
-    });
-    permissionMap.push({
-        url: prefix + USER_PREFIX + "preferences/:service_name",
-        method: "put",
-        permissions: ["write"]
-    });
-    permissionMap.push({
-        url: prefix + USER_PREFIX + "contacts/:service_name",
-        method: "put",
-        permissions: ["write"]
-    });
+    if (conf.security.resourcesPermissions) permissionMap = conf.security.resourcesPermissions;
 
     obj.security(permissionMap, app);
-    app.use(prefix + 'users/:user_id/contacts', security_checks.checkHeader);
-    app.use(prefix + 'users/:user_id/preferences', security_checks.checkHeader);
-    app.use(prefix + 'users/:user_id/terms', security_checks.checkHeader);
-    app.delete(prefix + 'users/:user_id', security_checks.checkHeader);
-}
-var locales = commons.locales;
-
-
-/**
- * check the input of the user for contacts
- */
-function checkInput(user) {
-    let res = [];
-
-    if (user.sms && !/^\d+$/.test(user.sms)) res.push("sms is not a number");
-    if (user.phone && !/^\d+$/.test(user.phone)) res.push("phone is not a number");
-    if (user.email && !user.email.match(/^(([^<>()\[\]\\.,;:\s@"]+(\.[^<>()\[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/))
-        res.push("email is not valid");
-    if(!user.push) user.push = {};
-    if (Array.isArray(user.push) || typeof user.push !== "object") res.push("push must be an object formed as: { label:[<token>]}");
-
-    if (user.language && !Object.keys(locales).includes(user.language)) res.push("language locale not valid");
-    if (user.interests) user.interests = user.interests.split(",").map(e => e.trim()).join(",");
-
-    return res;
-
 }
 
-function parseContact(user){
-  if(!user || user === null) return user;
-  if (user.push && user.push !== "") user.push = JSON.parse(user.push);
-  return user;
-}
-
-/**
- *  Get the list of services
- */
-app.get(prefix + 'services', async function (req, res, next) {
-
-    if (req.query.filter) try {
-        var filter = JSON.parse(req.query.filter);
-    } catch (err) {
-        return next({type: "client_error", status: 400, message: "error in filter"});
-    }
-    else filter = {};
-
-    if(!filter.tags) filter.tags = {};
-    filter.tags.not_match? filter.tags.not_match += " hidden" : filter.tags.not_match = "hidden";
-    if(filter.tags.not_match.split(" ").length > 2) return next({type: "client_error", status: 400, message: "error in filter: not match should contains only one token"});
-    if(filter.tags.ci) {
-        filter.tags.cai = filter.tags.ci;
-        delete filter.tags.ci;
-    }
-
-    var sql = buildQuery.select().table('services').filter(filter).sql;
-    logger.debug("Search services query: ", sql);
-    try {
-        var result = await db.execute(sql);
-        result = result.map(e => {
-            e.tags = e.tags.join(",");
-            return e;
-        });
-        next({type: "ok", status: 200, message: result});
-    } catch (err) {
-        if(err.errno && err.errno === 1054) return next({type: "client_error", status: 400, message: err});
-        return next({type: "db_error", status: 500, message: err});
-    }
-});
-
-
-app.get(prefix + 'users/:user_id/contacts', async function (req, res, next) {
-
-    let user_id = Utility.hashMD5(req.params.user_id);
-
-    var query = "";
-    try {
-        query = buildQuery.select().table("users").filter({"user_id": {"eq": user_id}}).sql;
-        var queryTerms = buildQuery.select().table("users_terms").filter({"user_id": {"eq": user_id}}).sql;
-    } catch (err) {
-        return next({type: "client_error", status: 400, message: err});
-    }
-
-    try {
-        var result = await db.execute(query);
-        var resultTerms = await db.execute(queryTerms);
-    } catch (err) {
-        return next({type: "db_error", status: 500, message: err});
-    }
-
-    if (!result || result.length === 0 || !resultTerms || resultTerms.length === 0) return next({type: "info", status: 404, message: "no contacts for " + req.params.user_id});
-
-
-    let user = result[0];
-    let userTerms = resultTerms[0];
-
-    user = parseContact(user);
-    user.user_id = req.params.user_id;
-    delete userTerms.user_id;
-    user.terms = userTerms;
-    next({type: "ok", status: 200, message: user});
-});
-
-
-/**
- *  insert or update contacts of user
- */
-app.put(prefix + 'users/:user_id/contacts', async function (req, res, next) {
-    let user = req.body;
-
-    let user_id = Utility.hashMD5(req.params.user_id);
-
-    try {
-        let select_query = buildQuery.select().table("users_terms").filter({"user_id":{"eq": user_id}}).sql;
-        var select_result = await db.execute(select_query);
-        if(!select_result[0] || select_result[0] === null) return next({type: "client_error", status: 412, message: "The user didn't accept the terms of service"});
-    } catch (err) {
-        return next({type: "db_error", status: 500, message: err});
-    }
-
-    let resCheck = checkInput(user);
-    if (resCheck.length > 0) {
-        resCheck.forEach(e => {
-            logger.info(e);
-        });
-        return next({
-            type: "client_error",
-            status: 400,
-            message: "user input is malformed: " + resCheck.join(","),
-            body: req.body
-        })
-    }
-
-
-    try {
-        var sql_insert_s = "INSERT INTO users_s (select *,to_timestamp(" + new Date().getTime() + "* 0.001) from users where user_id = '" + user_id + "')";
-        var sql_delete = buildQuery.delete().table("users").filter({
-            "user_id": {"eq": user_id}
-        }).sql;
-        var sql_insert = buildQuery.insert().table("users").values({
-            user_id: user_id,
-            sms: user.sms,
-            email: user.email,
-            push: JSON.stringify(user.push),
-            phone: user.phone,
-            language: user.language,
-            interests: user.interests
-        }).sql;
-        sql_insert_s = sql_insert_s + " ON CONFLICT ON CONSTRAINT users_s_pk do update set sms = '" + user.sms + "', email = '" + user.email + "', push = '" + JSON.stringify(user.push) + "', phone = '" + user.phone + "', language = '" + user.language + "', interests = '" + user.interests +"'";
-        var select_sql = buildQuery.select().table("users").filter({
-            "user_id": {"eq": user_id}
-        }).sql;
-    } catch (err) {
-        return next({type: "client_error", status: 400, message: "the request is not correct", body: err})
-    }
-
-    try {
-        var result = await db.execute(sql_insert_s + ";" + sql_delete + ";" + sql_insert + ";" + select_sql + ";");
-        let user = parseContact(result[3][0]);
-        user.user_id = req.params.user_id;
-        return next({type: "ok", status: 200, message: user})
-    } catch (err) {
-        logger.error(JSON.stringify(err));
-        return next({type: "db_error", status: 500, message: err})
-    }
-});
-
-/**
- *  get the preferences of the specified user for the specified service
- */
-app.get(prefix + 'users/:user_id/preferences/:service_name', async function (req, res, next) {
-
-    let user_id = Utility.hashMD5(req.params.user_id);
-
-    let filter = {
-        "user_id": {"eq": user_id},
-        "service_name": {"eq": req.params.service_name}
-    };
-    try {
-        var user_services_sql = buildQuery.select().table('users_services').filter(filter).sql;
-        var service_sql = buildQuery.select().table('services').filter({"name": {"eq": req.params.service_name}}).sql;
-        var user_sql = buildQuery.select().table('users').filter({"user_id": {"eq": user_id}}).sql;
-    } catch (err) {
-        return next({type: "client_error", status: 400, message: "the request is not correct", body: err})
-    }
-
-    try {
-        var result = await db.execute(user_services_sql + ";" + service_sql + ";" + user_sql);
-    } catch (err) {
-        return next({type: "db_error", status: 500, message: err})
-    }
-
-    var service = result[1][0];
-    if (!service) return next({type: "client_error", status: 404, message: "service doesn't exist"});
-    var user = result[2][0];
-    if (!user) return next({type: "client_error", status: 404, message: "user doesn't exist"});
-    var user_services = result[0][0];
-    if (!user_services) return next({type: "info", status: 404, message: "user preferences for this service not found"});
-    /* filter only the channels chosen from user that are available in the service*/
-    if(user_services.channels && user_services.channels !== "") {
-        let channelsPossibles = (user_services.channels.split(",")).filter(e => (service.channels.split(",")).includes(e));
-        user_services.channels = channelsPossibles.join(",");
-    }
-    user_services.user_id = req.params.user_id;
-    next({type: "ok", status: 200, message: user_services});
-});
-
-/**
- *  insert or update preferences of service
- */
-app.put(prefix + 'users/:user_id/preferences/:service_name', async function (req, res, next) {
-    let user_id = Utility.hashMD5(req.params.user_id);
-
-    if (!req.body.channels) req.body.channels = "";
-
-    try {
-        var sql_services = buildQuery.select().table("services").filter({"name": {"eq": req.params.service_name}}).sql;
-        var sql_insert_s = "INSERT INTO users_services_s (select *,to_timestamp(" + new Date().getTime() + "* 0.001) from users_services where user_id = '" + user_id + "' and service_name = '" + req.params.service_name + "')"
-        var sql_delete = buildQuery.delete().table("users_services").filter({
-            "user_id": {"eq": user_id},
-            "service_name": {"eq": req.params.service_name}
-        }).sql;
-        var sql_insert = buildQuery.insert().table("users_services").values({
-            uuid: Utility.uuid(),
-            user_id: user_id,
-            service_name: req.params.service_name,
-            channels: req.body.channels
-        }).sql;
-        if(req.body.channels === null || req.body.channels === "") sql_insert = "";
-    } catch (err) {
-        return next({type: "client_error", status: 400, message: "the request is not correct", body: err})
-    }
-
-    let total_query = sql_insert_s + "; " + sql_delete + "; " + sql_insert + ";";
-
-    try {
-        let service = await db.execute(sql_services);
-        service = service[0];
-        if(!service) return next({type: "client_error", status: 400, message: "the service '" + req.params.service_name + "' doesn't exist"});
-        await db.execute(total_query);
-    } catch (err) {
-        return next({type: "db_error", status: 500, message: err});
-    }
-    next({type: "ok", status: 200, message: "OK"});
-});
-
-
-/**
- *  get the preferences of the specified user for all the services
- */
-app.get(prefix + 'users/:user_id/preferences', async function (req, res, next) {
-
-    let user_id = Utility.hashMD5(req.params.user_id);
-
-    let filter = {
-        "user_id": {"eq": user_id}
-    };
-
-    try {
-        var user_services_sql = buildQuery.select("us.*").table('users_services as us').join().table("services as s").on("us.service_name=s.name").filter(filter).sql;
-        var user_sql = buildQuery.select().table('users').filter(filter).sql;
-    } catch (err) {
-        return next({type: "client_error", status: 400, message: "the request is not correct", body: err})
-    }
-
-    try {
-        var result = await db.execute(user_services_sql + ";" + user_sql);
-    } catch (err) {
-        return next({type: "db_error", status: 500, message: err})
-    }
-
-    var user = result[1][0];
-    if (!user) return next({type: "client_error", status: 404, message: "user doesn't exist"});
-    var user_services = result[0];
-    user_services = user_services.map(e => {
-        e.user_id = req.params.user_id;
-        return e;
-    });
-    next({type: "ok", status: 200, message: user_services});
-});
-
-
-/**
- *  insert or update preferences of service
- */
-app.put(prefix + 'users/:user_id/preferences', async function (req, res, next) {
-
-    let user_id = Utility.hashMD5(req.params.user_id);
-
-    let services = req.body;
-    if(Array.isArray(services)) return next({type: "client_error", status: 400, message: "Request body should be an object, not an array"});
-    await Object.keys(services).forEach(async service_name => {
-
-        if (!services[service_name]) services[service_name] = "";
-
-        try {
-            var sql_insert_s = "INSERT INTO users_services_s (select *,to_timestamp(" + new Date().getTime() + "* 0.001) from users_services where user_id = '" + user_id + "' and service_name = '" + service_name + "')"
-            var sql_delete = buildQuery.delete().table("users_services").filter({
-                "user_id": {"eq": user_id},
-                "service_name": {"eq": service_name}
-            }).sql;
-            var sql_insert = buildQuery.insert().table("users_services").values({
-                uuid: Utility.uuid(),
-                user_id: user_id,
-                service_name: service_name,
-                channels: services[service_name]
-            }).sql;
-            if(services[service_name] === null || services[service_name] === "") sql_insert = "";
-        } catch (err) {
-            return next({type: "client_error", status: 400, message: "the request is not correct", body: err})
-        }
-
-        let total_query = sql_insert_s + "; " + sql_delete + "; " + sql_insert + ";";
-
-        try {
-            await db.execute(total_query);
-        } catch (err) {
-            return next({type: "db_error", status: 500, message: err});
-        }
-    })
-    next({type: "ok", status: 200, message: "OK"});
-});
-
-/**
- *  get contacts of user for the only available channels the he has chosen
- */
-app.get(prefix + 'users/:user_id/contacts/:service', async function (req, res, next) {
-
-    let user_id = Utility.hashMD5(req.params.user_id);
-
-    var filter = {
-        "u.user_id": {"eq": user_id},
-        "us.service_name": {"eq": req.params.service}
-    };
-
-    try {
-        //var sql = buildQuery.select().table("( select u.user_id, us.channels, u.email, u.sms, u.push,us.service_name from users_services us,users u where u.user_id = us.user_id ) t").filter(filter).sql;
-        var checkUser = buildQuery.select().table("users").filter({"user_id": {"eq": user_id}}).sql;
-        var sql = buildQuery.select("u.user_id, us.channels, u.email, u.sms, u.push,us.service_name").table("users u")
-            .join("LEFT").table("users_services us").on("u.user_id = us.user_id").filter(filter).sql;
-    } catch (err) {
-        return next({type: "client_error", status: 400, message: "the request is not correct", body: err})
-    }
-
-    try {
-        var dbRes = await db.execute(checkUser + ";" + sql);
-    } catch (err) {
-        return next({type: "db_error", status: 500, message: err})
-    }
-    var user = dbRes[0][0];
-    if(!user){
-        return next({type: "info", status: 404, message: "user not found"})
-    }
-
-    var contacts = dbRes[1];
-
-    if (contacts.length === 0) {
-        return next({
-            type: "info",
-            status: 204,
-            message: ""
-        })
-    }
-
-    var result = {};
-    /* compose contacts object assigning to each channels the relative user contact */
-    if(contacts[0].channels) contacts[0].channels.split(",").map(e => e.trim()).forEach(e => result[e] = contacts[0][e]);
-
-    if (result.push && result.push !== "") {
-        try {
-            var push = JSON.parse(result["push"]);
-            push = push[req.params.service];
-            if(push && push.length > 0) result.push = push;
-            else delete result.push;
-        } catch (err) {
-            return next({type: "system_error", status: 500, message: "user push contact not a valid JSON"});
-        }
-    }
-    next({type: "ok", status: 200, message: result});
-});
-
-
-/**
- *  get terms of service
- */
-app.get(prefix + 'terms', async function (req, res, next) {
-
-    try {
-        var terms = fs.readFileSync(process.cwd() + "/terms/terms", 'utf8');
-    } catch (err) {
-        return next({type: "system_error", status: 500, message: err});
-    }
-    next({type: "ok", status: 200, message: terms});
-});
-
-
-/**
- *  accept user terms
- */
-app.put(prefix + 'users/:user_id/terms', async function (req, res, next) {
-
-    let user_id = Utility.hashMD5(req.params.user_id);
-
-    let document_hash = req.body;
-
-    try {
-        var terms = fs.readFileSync(process.cwd() + "/terms/terms");
-    } catch (err) {
-        return next({type: "system_error", status: 500, message: err});
-    }
-
-    let termsCrypted = Utility.hashMD5(terms);
-
-    if(termsCrypted !== document_hash.hash) return next({type: "client_error", status: 400, message: "the hash of terms is wrong", body: {}});
-
-    try {
-        let sql_insert_s = "INSERT INTO users_terms_s (select *,to_timestamp(" + new Date().getTime() + "* 0.001) from users_terms where user_id = '" + user_id + "')";
-        let sql_delete = buildQuery.delete().table("users_terms").filter({
-            "user_id": {"eq": user_id}
-        }).sql;
-        let sql_insert = buildQuery.insert().table("users_terms").values({
-            user_id: user_id,
-            accepted_at: Utility.getDateFormatted(new Date()),
-            hashed_terms: document_hash.hash
-        }).sql;
-        let select_query = buildQuery.select().table("users_terms").filter({"user_id":{"eq": user_id}}).sql;
-
-        var select_result = await db.execute(sql_insert_s + ";" + sql_delete + ";" + sql_insert + ";" + select_query);
-
-        let user = select_result[3][0];
-        delete user.user_id;
-        return next({type: "ok", status: 200, message: user});
-    } catch (err) {
-        return next({type: "db_error", status: 500, message: err});
-    }
-
-});
-
-
-app.get(prefix + 'users/:user_id/terms', async function (req, res, next) {
-
-    let user_id = Utility.hashMD5(req.params.user_id);
-
-    try {
-        let select_query = buildQuery.select().table("users_terms").filter({"user_id":{"eq": user_id}}).sql;
-        var select_result = await db.execute(select_query);
-
-        if(!select_result[0] || select_result[0] === null) return next({type: "client_error", status: 404, message: "User not found"});
-
-        let user = select_result[0];
-        delete user.user_id;
-        return next({type: "ok", status: 200, message: user});
-    } catch (err) {
-        return next({type: "db_error", status: 500, message: err});
-    }
-
-});
-
-
-
-/**
- *  historicize user
- */
-app.delete(prefix + 'users/:user_id', async function (req, res, next) {
-
-    let user_id = Utility.hashMD5(req.params.user_id);
-    try {
-        let sql_insert_s = "INSERT INTO users_s (select *,to_timestamp(" + new Date().getTime() + "* 0.001) from users where user_id = '" + user_id + "')";
-        sql_insert_s = sql_insert_s + " ON CONFLICT ON CONSTRAINT users_s_pk DO NOTHING";
-        let sql_delete_user = buildQuery.delete().table("users").filter({
-            "user_id": {"eq": user_id}
-        }).sql;
-        let sql_insert_terms_s = "INSERT INTO users_terms_s (select *,to_timestamp(" + new Date().getTime() + "* 0.001) from users_terms where user_id = '" + user_id + "')";
-        let sql_delete_terms = buildQuery.delete().table("users_terms").filter({
-            "user_id": {"eq": user_id}
-        }).sql;
-        let sql_delete_user_preferences = buildQuery.delete().table("users_services").filter({
-            "user_id": {"eq": user_id}
-        }).sql;
-
-        let total_query = sql_insert_s + "; " + sql_delete_user + "; " + sql_insert_terms_s + ";" + sql_delete_terms + ";" + sql_delete_user_preferences + ";";
-
-        await db.execute(total_query);
-        return next({type: "ok", status: 200, message: "OK"});
-    } catch (err) {
-        return next({type: "db_error", status: 500, message: err});
-    }
+// configure api versions
+const apiv1 = require('./api_v1.js'); //./api_v1.js
+const apiv2 = require('./api_v2.js'); //./api_v2.js
+apiv1(conf, app, obj, locales);
+apiv2(conf, app, obj, locales);
+
+app.use(function (req, res, next) {
+    next({ type: "error", status: 404, message: {code: 404, description: "resource not found"}});
 });
 
 obj.response_handler(app);
 
-
 app.listen(conf.server_port, function () {
-    logger.info("environment: ");
-    logger.info(JSON.stringify(process.env, null, 4));
-    logger.info("configuration: ");
-    logger.info(JSON.stringify(conf, null, 4));
-    logger.info('Express server preferences listening on port: ', conf.server_port);
+    logger.info("environment:", JSON.stringify(process.env, null, 4));
+    logger.info("configuration:", JSON.stringify(conf, null, 4));
+    logger.info("%s listening on port: %s", conf.app_name, conf.server_port);
 });
