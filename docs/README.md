@@ -61,6 +61,7 @@ I principali attributi presenti nei file di configurazione sono elencati di segu
     * `secret`: password per verificare firma del token auth utilizzato per chiamare la comopnente
     * `blacklist`: contiene la url per recuperare i token in blacklist
         *`url`: url per recupero token in blacklist
+* `defaulttenant`: tenant di default
 
 # Token JWT
 
